@@ -51,6 +51,13 @@ app.get('/', (req, res) => {
 async function run() {
   try {
     await client.connect();
+    // get all posts
+    app.get('/posts', async (req, res) => {
+      // const posts = await postCollection.find({}).toArray();
+      const posts = await postCollection.find({}).sort({ 'date': -1 }).toArray();
+      res.send({ success: true, posts });
+    });
+    
   } finally {
   }
 }
