@@ -57,7 +57,12 @@ async function run() {
       const posts = await postCollection.find({}).sort({ 'date': -1 }).toArray();
       res.send({ success: true, posts });
     });
-    
+    // get specific post
+    app.get('/post/:id', async (req, res) => {
+      const id = req.params.id;
+      const post = await postCollection.findOne({ _id: new ObjectId(id) });
+      res.send({ success: true, post });
+    });
   } finally {
   }
 }
