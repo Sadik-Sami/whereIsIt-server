@@ -54,7 +54,7 @@ async function run() {
     // get all posts
     app.get('/posts', async (req, res) => {
       // const posts = await postCollection.find({}).toArray();
-      const posts = await postCollection.find({}).sort({ 'date': -1 }).toArray();
+      const posts = await postCollection.find({}).sort({ date: -1 }).toArray();
       res.send({ success: true, posts });
     });
     // get specific post
@@ -62,6 +62,15 @@ async function run() {
       const id = req.params.id;
       const post = await postCollection.findOne({ _id: new ObjectId(id) });
       res.send({ success: true, post });
+    });
+    // post a post
+    app.post('/add-post', async (req, res) => {
+      const postData = req.body;
+      const response = await postCollection.insertOne(postData);
+      if (!result.acknowledged) {
+        return res.send({ success: false, message: 'Failed to add post' });
+      }
+      res.send({ success: true, message: 'Post added successfully' });
     });
   } finally {
   }
