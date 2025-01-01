@@ -72,7 +72,6 @@ async function run() {
     await client.connect();
     // get all posts
     app.get('/posts', async (req, res) => {
-      // const posts = await postCollection.find({}).toArray();
       const posts = await postCollection.find({}).sort({ date: -1 }).toArray();
       res.send({ success: true, posts });
     });
@@ -90,6 +89,16 @@ async function run() {
         return res.send({ success: false, message: 'Failed to add post' });
       }
       res.send({ success: true, message: 'Post added successfully' });
+    });
+    // update a post
+    app.patch('/update-post/:id', verifyToken, async (req, res) => {
+      const { id } = req.params;
+      const { email } = req.query;
+      const updates = req.body;
+      if (req.user.email !== email) {
+        return res.status(403).send({ success: false, message: 'Forbidden Access' });
+      }
+      res.send({ success: true, updates });
     });
   } finally {
   }
