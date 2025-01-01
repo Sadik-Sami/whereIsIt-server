@@ -47,7 +47,26 @@ const verifyToken = (req, res, next) => {
 app.get('/', (req, res) => {
   res.send('Looking for lost items');
 });
-
+app.post('/login', async (req, res) => {
+  const user = req.body;
+  const token = jwt.sign(user, process.env.JWT_SECRET, { expiresIn: '6h' });
+  res
+    .cookie('token', token, {
+      httpOnly: false,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'strict',
+    })
+    .send({ success: true });
+});
+app.post('/logout', (req, res) => {
+  res
+    .clearCookie('token', {
+      httpOnly: false,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'strict',
+    })
+    .send({ success: true });
+});
 async function run() {
   try {
     await client.connect();
