@@ -18,6 +18,7 @@ const client = new MongoClient(uri, {
 });
 // Mongo Databases
 const postCollection = client.db('lostFoundDB').collection('lostFoundPosts');
+const recoveredItemsCollection = client.db('lostFoundDB').collection('recoveredItems');
 
 // middlewares
 app.use(
@@ -67,6 +68,8 @@ app.post('/logout', (req, res) => {
     })
     .send({ success: true });
 });
+
+
 async function run() {
   try {
     await client.connect();
@@ -81,24 +84,236 @@ async function run() {
       const post = await postCollection.findOne({ _id: new ObjectId(id) });
       res.send({ success: true, post });
     });
-    // post a post
-    app.post('/add-post', async (req, res) => {
-      const postData = req.body;
-      const response = await postCollection.insertOne(postData);
-      if (!result.acknowledged) {
-        return res.send({ success: false, message: 'Failed to add post' });
+    // recover Item
+    app.post('/recover-item', verifyToken, async (req, res) => {
+      const recoveryData = req.body;
+      if (req.user.email !== req.query.email) {
+        return res.status(403).send({
+          success: false,
+          message: 'Forbidden: You can only update your own posts',
+        });
       }
-      res.send({ success: true, message: 'Post added successfully' });
+      try {
+        const recoveryResult = await recoveredItemsCollection.insertOne(recoveryData);
+        const updateResult = await postCollection.updateOne(
+          { _id: new ObjectId(recoveryData.postId) },
+          { $set: { status: 'recovered' } }
+        );
+
+        if (!recoveryResult.acknowledged || !updateResult.acknowledged) {
+          return res.status(400).send({ success: false, message: 'Failed to process recovery' });
+        }
+
+        res.send({ success: true, message: 'Item marked as recovered successfully' });
+      } catch (error) {
+        res.status(500).send({ success: false, message: 'Internal server error' });
+      }
     });
-    // update a post
-    app.patch('/update-post/:id', verifyToken, async (req, res) => {
-      const { id } = req.params;
-      const { email } = req.query;
-      const updates = req.body;
-      if (req.user.email !== email) {
-        return res.status(403).send({ success: false, message: 'Forbidden Access' });
+    // create a post
+    app.post('/posts', verifyToken, async (req, res) => {
+      try {
+        const postData = req.body;
+        const userEmail = req.user.email;
+        const queryEmail = req.query.email;
+        if (!userEmail) {
+          return res.status(401).send({
+            success: false,
+            message: 'Unauthorized: User not authenticated',
+          });
+        }
+        if (queryEmail && userEmail !== queryEmail) {
+          return res.status(403).send({
+            success: false,
+            message: 'Forbidden Access',
+          });
+        }
+        if (postData.email && userEmail !== postData.email) {
+          return res.status(403).send({
+            success: false,
+            message: 'Forbidden Action',
+          });
+        }
+        const requiredFields = ['title', 'description', 'location', 'category', 'thumbnail', 'postType'];
+        const missingFields = requiredFields.filter((field) => !postData[field]);
+
+        if (missingFields.length > 0) {
+          return res.status(400).send({
+            success: false,
+            message: `Missing required fields: ${missingFields.join(', ')}`,
+          });
+        }
+        if (!['Lost', 'Found'].includes(postData.postType)) {
+          return res.status(400).send({
+            success: false,
+            message: 'Invalid post type. Must be either "Lost" or "Found"',
+          });
+        }
+        const sanitizedPost = {
+          title: postData.title.trim(),
+          description: postData.description.trim(),
+          location: postData.location.trim(),
+          category: postData.category.toLowerCase(),
+          thumbnail: postData.thumbnail,
+          postType: postData.postType,
+          date: new Date(postData.date),
+          status: null,
+          email: userEmail, // Always use the email from the verified token
+          name: postData.name,
+          createdAt: new Date(),
+        };
+        const result = await postCollection.insertOne(sanitizedPost);
+
+        if (!result.insertedId) {
+          throw new Error('Failed to create post');
+        }
+        const createdPost = await postCollection.findOne({
+          _id: result.insertedId,
+        });
+        res.status(201).send({
+          success: true,
+          message: 'Post created successfully',
+          post: createdPost,
+        });
+      } catch (error) {
+        console.error('Create post error:', error);
+        if (error.name === 'ValidationError') {
+          return res.status(400).send({
+            success: false,
+            message: 'Invalid data provided',
+            errors: Object.values(error.errors).map((err) => err.message),
+          });
+        }
+        res.status(500).send({
+          success: false,
+          message: 'Internal server error while creating post',
+        });
       }
-      res.send({ success: true, updates });
+    });
+    // Update Post
+    app.patch('/update-post/:id', verifyToken, async (req, res) => {
+      try {
+        const { id } = req.params;
+        const { email } = req.query;
+        const updates = req.body;
+
+        // Authorization check
+        if (req.user.email !== email) {
+          return res.status(403).send({
+            success: false,
+            message: 'Forbidden: You can only update your own posts',
+          });
+        }
+
+        // Validate post existence and ownership
+        const existingPost = await postCollection.findOne({
+          _id: new ObjectId(id),
+          email: email,
+        });
+
+        if (!existingPost) {
+          return res.status(404).send({
+            success: false,
+            message: 'Post not found or you do not have permission to update it',
+          });
+        }
+
+        // Validate updates
+        if (!updates || Object.keys(updates).length === 0) {
+          return res.status(400).send({
+            success: false,
+            message: 'No updates provided',
+          });
+        }
+
+        // validate the updates (not letting the user update immutable fields)
+        const allowedUpdates = ['title', 'description', 'location', 'category', 'thumbnail', 'date', 'postType'];
+
+        const validUpdates = Object.keys(updates)
+          .filter((key) => allowedUpdates.includes(key))
+          .reduce((obj, key) => {
+            obj[key] = updates[key];
+            return obj;
+          }, {});
+
+        if (Object.keys(validUpdates).length === 0) {
+          return res.status(400).send({
+            success: false,
+            message: 'No valid updates provided',
+          });
+        }
+
+        // Validating required fields if they're being updated
+        if (validUpdates.title && !validUpdates.title.trim()) {
+          return res.status(400).send({
+            success: false,
+            message: 'Title cannot be empty',
+          });
+        }
+
+        if (validUpdates.description && !validUpdates.description.trim()) {
+          return res.status(400).send({
+            success: false,
+            message: 'Description cannot be empty',
+          });
+        }
+
+        // the actual update operation
+        const result = await postCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: validUpdates },
+          { runValidators: true }
+        );
+
+        // checking update result
+        if (!result.matchedCount) {
+          return res.status(404).send({
+            success: false,
+            message: 'Post not found',
+          });
+        }
+
+        if (!result.modifiedCount) {
+          return res.status(400).send({
+            success: false,
+            message: 'No changes made to the post',
+          });
+        }
+
+        // sending the new updated post
+        const updatedPost = await postCollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+        res.send({
+          success: true,
+          message: 'Post updated successfully',
+          post: updatedPost,
+        });
+      } catch (error) {
+        console.error('Update post error:', error);
+
+        //mongoDB error handling
+        if (error.name === 'ValidationError') {
+          return res.status(400).send({
+            success: false,
+            message: 'Invalid data provided',
+            errors: Object.values(error.errors).map((err) => err.message),
+          });
+        }
+
+        if (error.name === 'CastError') {
+          return res.status(400).send({
+            success: false,
+            message: 'Invalid ID format',
+          });
+        }
+
+        // normal/ general error cases
+        res.status(500).send({
+          success: false,
+          message: 'Internal server error while updating post',
+        });
+      }
     });
   } finally {
   }
