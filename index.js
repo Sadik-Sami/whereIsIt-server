@@ -23,7 +23,12 @@ const recoveredItemsCollection = client.db('lostFoundDB').collection('recoveredI
 // middlewares
 app.use(
   cors({
-    origin: ['http://localhost:5173', 'https://whereisit-tau.vercel.app'],
+    origin: [
+      'http://localhost:5173',
+      'https://whereisit-tau.vercel.app',
+      'https://lost-and-found-245c3.web.app',
+      'https://lost-and-found-245c3.firebaseapp.com',
+    ],
     credentials: true,
   })
 );
@@ -72,7 +77,7 @@ app.post('/logout', (req, res) => {
 
 async function run() {
   try {
-    await client.connect();
+    // await client.connect();
     app.get('/posts', async (req, res) => {
       try {
         const page = parseInt(req.query.page) || 1;
