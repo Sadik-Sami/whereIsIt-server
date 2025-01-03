@@ -16,20 +16,19 @@ const client = new MongoClient(uri, {
     deprecationErrors: true,
   },
 });
-// Mongo Databases
+// Mongo Database Collecctions
 const postCollection = client.db('lostFoundDB').collection('lostFoundPosts');
 const recoveredItemsCollection = client.db('lostFoundDB').collection('recoveredItems');
 
 // middlewares
 app.use(
   cors({
-    origin: ['http://localhost:5173', 'https://job-hunt-8be6b.web.app', 'https://job-hunt-8be6b.firebaseapp.com'],
+    origin: ['http://localhost:5173', 'https://whereisit-tau.vercel.app'],
     credentials: true,
   })
 );
 app.use(express.json());
 app.use(cookieParser());
-
 // Custom Middlewear
 const verifyToken = (req, res, next) => {
   const token = req?.cookies?.token;
@@ -48,6 +47,8 @@ const verifyToken = (req, res, next) => {
 app.get('/', (req, res) => {
   res.send('Looking for lost items');
 });
+
+// JWT Token Login and LogOut Logics
 app.post('/login', async (req, res) => {
   const user = req.body;
   const token = jwt.sign(user, process.env.JWT_SECRET, { expiresIn: '6h' });
@@ -69,22 +70,144 @@ app.post('/logout', (req, res) => {
     .send({ success: true });
 });
 
-
 async function run() {
   try {
     await client.connect();
-    // get all posts
     app.get('/posts', async (req, res) => {
-      const posts = await postCollection.find({}).sort({ date: -1 }).toArray();
-      res.send({ success: true, posts });
+      try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 6;
+        if (limit < 6 || limit > 9) {
+          return res.status(400).send({
+            success: false,
+            message: 'Items per page must be between 6 and 9',
+          });
+        }
+        const skip = (page - 1) * limit;
+        const total = await postCollection.countDocuments();
+        const posts = await postCollection.find().sort({ date: -1 }).skip(skip).limit(limit).toArray();
+        const totalPages = Math.ceil(total / limit);
+        const hasNextPage = page < totalPages;
+        const hasPrevPage = page > 1;
+
+        res.send({
+          success: true,
+          posts,
+          pagination: {
+            total,
+            page,
+            limit,
+            totalPages,
+            hasNextPage,
+            hasPrevPage,
+          },
+        });
+      } catch (error) {
+        console.error('Fetch posts error:', error);
+        res.status(500).send({
+          success: false,
+          message: 'Internal server error while fetching posts',
+        });
+      }
     });
-    // get specific post
-    app.get('/post/:id', async (req, res) => {
-      const id = req.params.id;
-      const post = await postCollection.findOne({ _id: new ObjectId(id) });
-      res.send({ success: true, post });
+
+    // Get Specific Post
+    app.get('/post/:id', verifyToken, async (req, res) => {
+      try {
+        const id = req.params.id;
+        const userEmail = req.user.email;
+        const queryEmail = req.query.email;
+        if (!userEmail) {
+          return res.status(401).send({
+            success: false,
+            message: 'Unauthorized: User not authenticated',
+          });
+        }
+        if (userEmail !== queryEmail) {
+          return res.status(403).send({
+            success: false,
+            message: 'Forbidden Access',
+          });
+        }
+        const post = await postCollection.findOne({ _id: new ObjectId(id) });
+        res.send({ success: true, post });
+      } catch (error) {
+        console.error('Fetch specific post error:', error);
+        res.status(500).send({
+          success: false,
+          message: 'Internal server error while fetching posts',
+        });
+      }
     });
-    // recover Item
+
+    // Get All Posts By Logged In User
+    app.get('/my-posts', verifyToken, async (req, res) => {
+      try {
+        const userEmail = req.user.email;
+        const queryEmail = req.query.email;
+        if (!userEmail) {
+          return res.status(401).send({
+            success: false,
+            message: 'Unauthorized: User not authenticated',
+          });
+        }
+        if (queryEmail && userEmail !== queryEmail) {
+          return res.status(403).send({
+            success: false,
+            message: 'Forbidden Access',
+          });
+        }
+        const posts = await postCollection.find({ email: userEmail }).sort({ date: -1 }).toArray();
+        res.send({
+          success: true,
+          posts,
+        });
+      } catch (error) {
+        console.error('Fetch my posts error:', error);
+        res.status(500).send({
+          success: false,
+          message: 'Internal server error while fetching posts',
+        });
+      }
+    });
+
+    // Get All Recovered Items By Logged In User
+    app.get('/recovered-items', verifyToken, async (req, res) => {
+      try {
+        const userEmail = req.user.email;
+        const queryEmail = req.query.email;
+        if (!userEmail) {
+          return res.status(401).send({
+            success: false,
+            message: 'Unauthorized: User not authenticated',
+          });
+        }
+        if (queryEmail && userEmail !== queryEmail) {
+          return res.status(403).send({
+            success: false,
+            message: 'Forbidden: Token email does not match query email',
+          });
+        }
+        const items = await recoveredItemsCollection
+          .find({
+            $or: [{ 'recoveredBy.email': userEmail }, { 'originalPost.email': userEmail }],
+          })
+          .sort({ recoveryDate: -1 })
+          .toArray();
+        res.send({
+          success: true,
+          items,
+        });
+      } catch (error) {
+        console.error('Fetch recovered items error:', error);
+        res.status(500).send({
+          success: false,
+          message: 'Internal server error while fetching recovered items',
+        });
+      }
+    });
+
+    // Recovering An Item
     app.post('/recover-item', verifyToken, async (req, res) => {
       const recoveryData = req.body;
       if (req.user.email !== req.query.email) {
@@ -109,7 +232,8 @@ async function run() {
         res.status(500).send({ success: false, message: 'Internal server error' });
       }
     });
-    // create a post
+
+    // Creating A New Post
     app.post('/posts', verifyToken, async (req, res) => {
       try {
         const postData = req.body;
@@ -157,7 +281,7 @@ async function run() {
           postType: postData.postType,
           date: new Date(postData.date),
           status: null,
-          email: userEmail, // Always use the email from the verified token
+          email: userEmail, // using the email from the verified token
           name: postData.name,
           createdAt: new Date(),
         };
@@ -189,22 +313,19 @@ async function run() {
         });
       }
     });
-    // Update Post
+
+    // Updating A Post
     app.patch('/update-post/:id', verifyToken, async (req, res) => {
       try {
         const { id } = req.params;
         const { email } = req.query;
         const updates = req.body;
-
-        // Authorization check
         if (req.user.email !== email) {
           return res.status(403).send({
             success: false,
             message: 'Forbidden: You can only update your own posts',
           });
         }
-
-        // Validate post existence and ownership
         const existingPost = await postCollection.findOne({
           _id: new ObjectId(id),
           email: email,
@@ -216,70 +337,54 @@ async function run() {
             message: 'Post not found or you do not have permission to update it',
           });
         }
-
-        // Validate updates
         if (!updates || Object.keys(updates).length === 0) {
           return res.status(400).send({
             success: false,
             message: 'No updates provided',
           });
         }
-
-        // validate the updates (not letting the user update immutable fields)
         const allowedUpdates = ['title', 'description', 'location', 'category', 'thumbnail', 'date', 'postType'];
-
         const validUpdates = Object.keys(updates)
           .filter((key) => allowedUpdates.includes(key))
           .reduce((obj, key) => {
             obj[key] = updates[key];
             return obj;
           }, {});
-
         if (Object.keys(validUpdates).length === 0) {
           return res.status(400).send({
             success: false,
             message: 'No valid updates provided',
           });
         }
-
-        // Validating required fields if they're being updated
         if (validUpdates.title && !validUpdates.title.trim()) {
           return res.status(400).send({
             success: false,
             message: 'Title cannot be empty',
           });
         }
-
         if (validUpdates.description && !validUpdates.description.trim()) {
           return res.status(400).send({
             success: false,
             message: 'Description cannot be empty',
           });
         }
-
-        // the actual update operation
         const result = await postCollection.updateOne(
           { _id: new ObjectId(id) },
           { $set: validUpdates },
           { runValidators: true }
         );
-
-        // checking update result
         if (!result.matchedCount) {
           return res.status(404).send({
             success: false,
             message: 'Post not found',
           });
         }
-
         if (!result.modifiedCount) {
           return res.status(400).send({
             success: false,
             message: 'No changes made to the post',
           });
         }
-
-        // sending the new updated post
         const updatedPost = await postCollection.findOne({
           _id: new ObjectId(id),
         });
@@ -291,8 +396,6 @@ async function run() {
         });
       } catch (error) {
         console.error('Update post error:', error);
-
-        //mongoDB error handling
         if (error.name === 'ValidationError') {
           return res.status(400).send({
             success: false,
@@ -307,11 +410,73 @@ async function run() {
             message: 'Invalid ID format',
           });
         }
-
-        // normal/ general error cases
         res.status(500).send({
           success: false,
           message: 'Internal server error while updating post',
+        });
+      }
+    });
+
+    // Deleting A Post
+    app.delete('/posts/:id', verifyToken, async (req, res) => {
+      try {
+        const { id } = req.params;
+        const userEmail = req.user.email;
+        const queryEmail = req.query.email;
+        if (!userEmail) {
+          return res.status(401).send({
+            success: false,
+            message: 'Unauthorized: User not authenticated',
+          });
+        }
+        if (queryEmail && userEmail !== queryEmail) {
+          return res.status(403).send({
+            success: false,
+            message: 'Forbidden: Token email does not match query email',
+          });
+        }
+        const post = await postCollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+        if (!post) {
+          return res.status(404).send({
+            success: false,
+            message: 'Post not found',
+          });
+        }
+        if (post.email !== userEmail) {
+          return res.status(403).send({
+            success: false,
+            message: 'Forbidden: You can only delete your own posts',
+          });
+        }
+        const result = await postCollection.deleteOne({
+          _id: new ObjectId(id),
+          email: userEmail,
+        });
+
+        if (!result.deletedCount) {
+          return res.status(400).send({
+            success: false,
+            message: 'Failed to delete post',
+          });
+        }
+        res.send({
+          success: true,
+          message: 'Post deleted successfully',
+        });
+      } catch (error) {
+        console.error('Delete post error:', error);
+        if (error.name === 'CastError') {
+          return res.status(400).send({
+            success: false,
+            message: 'Invalid post ID format',
+          });
+        }
+        res.status(500).send({
+          success: false,
+          message: 'Internal server error while deleting post',
         });
       }
     });
